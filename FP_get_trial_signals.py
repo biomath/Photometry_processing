@@ -1,5 +1,6 @@
 from matplotlib.backends.backend_pdf import PdfPages
 import pandas as pd
+from copy import deepcopy
 import numpy as np
 from scipy.integrate import simps
 from re import split, search
@@ -21,6 +22,8 @@ if platform.system() == 'Windows':
     REGEX_SEP = sep * 2
 else:
     REGEX_SEP = sep
+
+
 #
 # # Set plotting parameters
 # label_font_size = 11
@@ -60,8 +63,81 @@ class NumpyEncoder(json.JSONEncoder):
         return json.JSONEncoder.default(self, obj)
 
 
+def calculate_PeakValue_and_AUC(sigs, trial_info, baseline_window_start_time, trial_type,
+                                fs, x_axis,
+                                fixed_trapz_start=0, fixed_trapz_duration=4, fixed_auc_window=True,
+                                spout_key_times=None):
+    auc_response = np.zeros(np.shape(sigs)[0])
+    peak = np.zeros(np.shape(sigs)[0])
+    auc_baseline = np.zeros(np.shape(sigs)[0])
+    ret_trial_info = deepcopy(trial_info)  # Make a copy in case this needs to be modified
+    for trial_idx, cur_trial in enumerate(ret_trial_info):
+        if not fixed_auc_window and spout_key_times is not None:
+            # Find spout offset that triggered Hit/FA or spout offset around a shock
+            if trial_type == 'Hit' or trial_type == 'False alarm':
+                cur_trial_onset = cur_trial[2]
+                cur_trial_offset = cur_trial[3]
+                spoutOffset_triggers = spout_key_times[(spout_key_times['Spout_offset'] > cur_trial_onset) &
+                                                       (spout_key_times['Spout_offset'] < cur_trial_offset)][
+                    'Spout_offset'].values
+                try:
+                    trapz_start = spoutOffset_triggers[-1] - cur_trial_onset
+
+                except IndexError:
+                    # passive recordings or something weird; could also be the last trial, in which case,
+                    # skip measurement and remove trial from trial_info
+
+                    # trapz_start = fixed_trapz_start
+                    del ret_trial_info[trial_idx]
+                    continue
+
+
+            # Find spout offset occurring right after a shock, say 0.5 s after shock duration?
+            # Plot spout offset latency after shock onset to get an idea
+            elif trial_type == 'Miss (shock)':
+                shock_duration = 0.3  # seconds
+                response_window = 1  # seconds
+                cur_trial_onset = cur_trial[2]
+                cur_trial_offset = cur_trial[3]
+                spoutOffset_triggers = spout_key_times[
+                    (spout_key_times['Spout_offset'] > cur_trial_offset) &
+                    (spout_key_times['Spout_offset'] < cur_trial_offset + response_window)]['Spout_offset'].values
+                try:
+                    trapz_start = spoutOffset_triggers[0] - cur_trial_onset
+
+                except IndexError:
+                    # passive recordings or something weird; could also be the last trial, in which case,
+                    # skip measurement and remove trial from trial_info
+
+                    # trapz_start = fixed_trapz_start
+                    del ret_trial_info[trial_idx]
+                    continue
+            else:
+                trapz_start = fixed_trapz_start
+
+        else:
+            trapz_start = fixed_trapz_start
+
+        trapz_end = trapz_start + fixed_trapz_duration
+        bounded_response_xaxis = x_axis[int((trapz_start + baseline_window_start_time) * fs):
+                                        int((trapz_end + baseline_window_start_time) * fs)]
+
+        bounded_response = sigs[trial_idx, int((trapz_start + baseline_window_start_time) * fs):
+                                           int((trapz_end + baseline_window_start_time) * fs)]
+
+        bounded_baseline_xaxis = x_axis[0:int(baseline_window_start_time * fs)]
+        bounded_baseline = sigs[trial_idx, 0:int(baseline_window_start_time * fs)]
+
+        auc_response[trial_idx] = simps(bounded_response, bounded_response_xaxis)
+        peak[trial_idx] = np.max(bounded_response)
+        auc_baseline[trial_idx] = simps(bounded_baseline, bounded_baseline_xaxis)
+
+    return ret_trial_info, auc_response, peak, auc_baseline
+
+
 def run_pipeline(input_list):
-    (baseline_window_start_time, response_window_duration, KEYS_PATH, OUTPUT_PATH), (memory_path, all_json) = input_list
+    (baseline_window_start_time, response_window_duration, keys_path, output_path, fixed_auc_window), (
+        memory_path, all_json) = input_list
     # Split path name to get subject, session and unit ID for prettier output
     split_memory_path = split(REGEX_SEP, memory_path)  # split path
     recording_id = split_memory_path[-1][:-4]  # Example id: SUBJ-ID-104_FP-Aversive-AM-210707-110339_dff
@@ -83,22 +159,23 @@ def run_pipeline(input_list):
     # These are in alphabetical order. Must sort by date_trial or match with filev
     # Match by name for now for breakpoints
 
-    key_paths_info = glob(KEYS_PATH + sep + subject_id + '*' + 'Aversive*' +
+    key_paths_info = glob(keys_path + sep + subject_id + '*' + 'Aversive*' +
                           cur_date + "*_trialInfo.csv")
-    key_paths_spout = glob(KEYS_PATH + sep + subject_id + '*' +
+    key_paths_spout = glob(keys_path + sep + subject_id + '*' + 'Aversive*' +
                            cur_date + "*spoutTimestamps.csv")
 
     if len(key_paths_info) == 0:
         print("Key not found for " + recording_id)
         return
 
-    # Load key files
+    # Load key and spout files
     info_key_times = pd.read_csv(key_paths_info[0])
+    spout_key_times = pd.read_csv(key_paths_spout[0])
 
     # Load signal
     processed_signal = pd.read_csv(memory_path)
 
-    fs = 1/np.mean(np.diff(processed_signal['Time']))
+    fs = 1 / np.mean(np.diff(processed_signal['Time']))
 
     # Grab GO trials and FA trials for stim response then walk back to get the immediately preceding CR trial
     # One complicating factor is spout onset/offset but I'll ignore this for now
@@ -124,7 +201,8 @@ def run_pipeline(input_list):
             # 405 fit-removed signal
             baseline_signal = processed_signal[
                 (processed_signal['Time'] >= (cur_trial['Trial_onset'] - baseline_window_start_time)) &
-                (processed_signal['Time'] < (cur_trial['Trial_onset'] - baseline_window_start_time + baseline_duration))]['Ch465_dff']
+                (processed_signal['Time'] < (
+                        cur_trial['Trial_onset'] - baseline_window_start_time + baseline_duration))]['Ch465_dff']
 
             # Non-corrected 465 signal
             # baseline_signal = processed_signal[
@@ -141,8 +219,10 @@ def run_pipeline(input_list):
             # dff_zscore = (signal_around_trial['Ch465_mV'].values - baseline_mean) / baseline_std
 
             # Trial parameters will be under index 0, signal will always be index 1
-            ret_list.append(( (cur_trial['TrialID'], cur_trial['AMdepth'], cur_trial['Trial_onset']),
-                              dff_zscore ))
+            ret_list.append(((cur_trial['TrialID'], cur_trial['AMdepth'],
+                              cur_trial['Trial_onset'],
+                              cur_trial['Trial_offset']),
+                             dff_zscore))
         return ret_list
 
     hit_signals = __get_trialID_zscore(hit_key_times)
@@ -158,19 +238,19 @@ def run_pipeline(input_list):
                                 [len(x[1]) for x in fa_signals]] for item in sublist])
 
     hit_signals = [x for x in hit_signals if (len(x[1]) > median_length - tolerance) and
-                   (len(x[1]) < median_length + 100) ]
+                   (len(x[1]) < median_length + 100)]
     missShock_signals = [x for x in missShock_signals if (len(x[1]) > median_length - tolerance) and
-                           (len(x[1]) < median_length + 100) ]
+                         (len(x[1]) < median_length + 100)]
     missNoShock_signals = [x for x in missNoShock_signals if (len(x[1]) > median_length - tolerance) and
-                             (len(x[1]) < median_length + 100) ]
+                           (len(x[1]) < median_length + 100)]
     fa_signals = [x for x in fa_signals if (len(x[1]) > median_length - tolerance) and
-                  (len(x[1]) < median_length + 100) ]
+                  (len(x[1]) < median_length + 100)]
 
     # Now uniformize lengths (tolerated jitter of 1 point)
     min_length = np.min([item for sublist in
-                               [[len(x[1]) for x in hit_signals], [len(x[1]) for x in missShock_signals],
-                                [len(x[1]) for x in missNoShock_signals],
-                                [len(x[1]) for x in fa_signals]] for item in sublist])
+                         [[len(x[1]) for x in hit_signals], [len(x[1]) for x in missShock_signals],
+                          [len(x[1]) for x in missNoShock_signals],
+                          [len(x[1]) for x in fa_signals]] for item in sublist])
 
     hit_signals = [(x[0], np.array(x[1][0:min_length])) for x in hit_signals]
     missShock_signals = [(x[0], np.array(x[1][0:min_length])) for x in missShock_signals]
@@ -186,30 +266,31 @@ def run_pipeline(input_list):
     peak_list = list()
     trial_type_list = list()
     trapz_start = 0
-    trapz_end = 4
-    with PdfPages(sep.join([OUTPUT_PATH, recording_id + '_trialSignals.pdf'])) as pdf:
+    # trapz_duration = 4  # used for fixed trapz start
+    trapz_duration = 3  # used for trial-by-trial trapz start
+    with PdfPages(sep.join([output_path, recording_id + '_trialSignals.pdf'])) as pdf:
         # fig, ax = plt.subplots(1, 1)
         fig = plt.figure()
         ax = fig.add_subplot(111)
         # Trial shading
         ax.axvspan(0, 1, facecolor='black', alpha=0.1)
         legend_handles = list()
-        for trial_sig, color, legend_label in zip([hit_signals, missNoShock_signals, missShock_signals, fa_signals],
-                              [hit_color, missNoShock_color, missShock_color, fa_color],
-                              ['Hit', 'Miss (no shock)', 'Miss (shock)', 'False alarm']):
+        for trial_sig, color, trial_type in \
+                zip([hit_signals, missNoShock_signals, missShock_signals, fa_signals],
+                    [hit_color, missNoShock_color, missShock_color, fa_color],
+                    ['Hit', 'Miss (no shock)', 'Miss (shock)', 'False alarm']):
             # Separate trial info for simplicity in calculations below
             # trialID = np.array([ts[0][0] for ts in trial_sig])
             # AMdepth = np.array([ts[0][1] for ts in trial_sig])
             # trialOnset =np.array([ts[0][2] for ts in trial_sig])
-
 
             sigs = np.array([ts[1] for ts in trial_sig], ndmin=2)
 
             if np.size(sigs) == 0:
                 continue
 
-            # trial_type_list.append(legend_label)
-            if legend_label == 'Miss (no shock)':
+            # trial_type_list.append(trial_type)
+            if trial_type == 'Miss (no shock)':
                 linestyle = '--'
             else:
                 linestyle = '-'
@@ -221,22 +302,21 @@ def run_pipeline(input_list):
                             alpha=0.1, color=color, edgecolor='none')
 
             legend_handles.append(patches.Patch(facecolor=color, edgecolor=None, alpha=0.5,
-                                                label=legend_label))
-
-            bounded_response_xaxis = x_axis[int((trapz_start+baseline_window_start_time)*fs):
-                                          int((trapz_end+baseline_window_start_time)*fs)]
-            bounded_response = sigs[:, int((trapz_start+baseline_window_start_time)*fs):
-                                          int((trapz_end+baseline_window_start_time)*fs)]
-
-            bounded_baseline_xaxis = x_axis[0:int(baseline_window_start_time * fs)]
-            bounded_baseline = sigs[:, 0:int(baseline_window_start_time * fs)]
+                                                label=trial_type))
 
             # Measure and add measurements to list
-            trial_info = [x[0] for x in trial_sig]                                  # idx=0
-            auc_response = simps(bounded_response, bounded_response_xaxis, axis=1)  # idx=1
-            peak = np.max(bounded_response, axis=1)                                 # idx=2
-            auc_baseline = simps(bounded_baseline, bounded_baseline_xaxis, axis=1)  # idx=3
-            output_dict.update({legend_label: (trial_info, auc_response, peak, auc_baseline)})
+            trial_info = [x[0] for x in trial_sig]  # idx=0
+            trial_info, auc_response, peak, auc_baseline = calculate_PeakValue_and_AUC(sigs,
+                                                                                       trial_info,
+                                                                                       trial_type=trial_type,
+                                                                                       baseline_window_start_time=baseline_window_start_time,
+                                                                                       fs=fs, x_axis=x_axis,
+                                                                                       fixed_trapz_start=trapz_start,
+                                                                                       fixed_trapz_duration=trapz_duration,
+                                                                                       fixed_auc_window=fixed_auc_window,
+                                                                                       spout_key_times=spout_key_times)  # idx= 1, 2, 3
+
+            output_dict.update({trial_type: (trial_info, auc_response, peak, auc_baseline)})
 
             # except ValueError:
             #     print()
@@ -260,11 +340,12 @@ def run_pipeline(input_list):
         plt.close()
 
     # Write csv with area under curves
-    with open(sep.join([OUTPUT_PATH, recording_id + '_trialSignals.csv']), 'w', newline='') as file:
+    with open(sep.join([output_path, recording_id + '_trialSignals.csv']), 'w', newline='') as file:
         writer = csv.writer(file, delimiter=',')
 
         writer.writerow(['Recording'] + ['Trial_type'] + ['TrialID'] + ['AMdepth'] +
-                        ['Trial_onset'] + ['Area_under_curve'] + ['Peak_value'] + ['Baseline_area_under_curve'])
+                        ['Trial_onset'] + ['Trial_offset'] + ['Area_under_curve'] + ['Peak_value'] + [
+                            'Baseline_area_under_curve'])
 
         for trial_type in output_dict.keys():
             for trial_idx in range(len(output_dict[trial_type][0])):
@@ -273,13 +354,16 @@ def run_pipeline(input_list):
                 trialID = output_dict[trial_type][0][trial_idx][0]
                 AMdepth = output_dict[trial_type][0][trial_idx][1]
                 trial_onset = output_dict[trial_type][0][trial_idx][2]
+                trial_offset = output_dict[trial_type][0][trial_idx][3]
                 writer.writerow([recording_id] + [trial_type] + [trialID] + [np.round(AMdepth, 2)] +
                                 [trial_onset] +  # Trial onset
-                                [output_dict[trial_type][1][trial_idx]] +   # Trapz
-                                [output_dict[trial_type][2][trial_idx]] +   # Peak
-                                [output_dict[trial_type][3][trial_idx]])    # Baseline AUC for dprime calculations
+                                [trial_offset] +
+                                [output_dict[trial_type][1][trial_idx]] +  # Trapz
+                                [output_dict[trial_type][2][trial_idx]] +  # Peak
+                                [output_dict[trial_type][3][trial_idx]])  # Baseline AUC for dprime calculations
     #
     #
+
 # SIGNALS_PATH = ''
 # KEYS_PATH = ''
 # OUTPUT_PATH = ''

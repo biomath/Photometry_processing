@@ -3,6 +3,7 @@ from warnings import filterwarnings
 from glob import glob
 from platform import system
 from os.path import sep
+from os import makedirs
 
 from FP_get_trial_signals import run_pipeline as trial_signals_pipeline
 from FP_get_signalsByAM import run_pipeline as signalsByAm_pipeline
@@ -16,11 +17,11 @@ else:
 
 
 def run_trialSignals_pipeline(main_path, baseline_duration_for_zscore, stim_duration_for_zscore, number_of_cores=int(cpu_count() / 2),
-                              subjects_to_run=None, sessions_to_run=None):
+                              subjects_to_run=None, sessions_to_run=None, fixed_auc_window=True):
     # filterwarnings("ignore")
 
-    BASELINE_DURATION_FOR_ZSCORE = baseline_duration_for_zscore  # in seconds; for firing rate calculation to non-AM trials
-    STIM_DURATION_FOR_ZSCORE = stim_duration_for_zscore  # in seconds; for firing rate calculation to AM trials
+    baseline_duration_for_zscore = baseline_duration_for_zscore  # in seconds; for firing rate calculation to non-AM trials
+    stim_duration_for_zscore = stim_duration_for_zscore  # in seconds; for firing rate calculation to AM trials
 
     # number_of_cores  = int(cpu_count()/2)
 
@@ -29,21 +30,22 @@ def run_trialSignals_pipeline(main_path, baseline_duration_for_zscore, stim_dura
     subjects_to_run = subjects_to_run
     sessions_to_run = sessions_to_run
 
-    SIGNALS_PATH = '.' + sep + sep.join([main_path, 'Whole session signal'])
-    SIGNALS_PATH = glob(SIGNALS_PATH + sep + '*Aversive*dff.csv')
-    KEYS_PATH = '.' + sep + sep.join([main_path, 'Key files'])
-    OUTPUT_PATH = '.' + sep + sep.join([main_path, 'Output'])
+    signals_path = '.' + sep + sep.join([main_path, 'Whole session signal'])
+    signals_path = glob(signals_path + sep + '*Aversive*dff.csv')
+    keys_path = '.' + sep + sep.join([main_path, 'Key files'])
+    output_path = '.' + sep + sep.join([main_path, 'Output', 'SpoutOffset centered'])
+    makedirs(output_path, exist_ok=True)
 
-    globals_input_list = (BASELINE_DURATION_FOR_ZSCORE, STIM_DURATION_FOR_ZSCORE, KEYS_PATH, OUTPUT_PATH)
+    globals_input_list = (baseline_duration_for_zscore, stim_duration_for_zscore, keys_path, output_path, fixed_auc_window)
 
     # Load existing JSONs; will be empty if this is the first time running
-    all_json = glob(OUTPUT_PATH + sep + 'JSON files' + sep + '*json')
+    all_json = glob(output_path + sep + 'JSON files' + sep + '*json')
 
     # Generate a list of inputs to be passed to each worker
     file_input_lists = list()
 
-    DEBUG = True
-    for dummy_idx, memory_path in enumerate(SIGNALS_PATH):
+    DEBUG = False
+    for dummy_idx, memory_path in enumerate(signals_path):
 
         if subjects_to_run is not None:
             if any([chosen for chosen in subjects_to_run if chosen in memory_path]):
@@ -77,8 +79,8 @@ def run_signalsByAM_pipeline(main_path, baseline_duration_for_zscore, stim_durat
                               subjects_to_run=None, sessions_to_run=None):
     # filterwarnings("ignore")
 
-    BASELINE_DURATION_FOR_ZSCORE = baseline_duration_for_zscore  # in seconds; for firing rate calculation to non-AM trials
-    STIM_DURATION_FOR_ZSCORE = stim_duration_for_zscore  # in seconds; for firing rate calculation to AM trials
+    baseline_duration_for_zscore = baseline_duration_for_zscore  # in seconds; for firing rate calculation to non-AM trials
+    stim_duration_for_zscore = stim_duration_for_zscore  # in seconds; for firing rate calculation to AM trials
 
     # number_of_cores  = int(cpu_count()/2)
 
@@ -87,20 +89,20 @@ def run_signalsByAM_pipeline(main_path, baseline_duration_for_zscore, stim_durat
     subjects_to_run = subjects_to_run
     sessions_to_run = sessions_to_run
 
-    SIGNALS_PATH = '.' + sep + sep.join([main_path, 'Whole session signal'])
-    SIGNALS_PATH = glob(SIGNALS_PATH + sep + '*Aversive*dff.csv')
-    KEYS_PATH = '.' + sep + sep.join([main_path, 'Key files'])
-    OUTPUT_PATH = '.' + sep + sep.join([main_path, 'Output'])
+    signals_path = '.' + sep + sep.join([main_path, 'Whole session signal'])
+    signals_path = glob(signals_path + sep + '*Aversive*dff.csv')
+    keys_path = '.' + sep + sep.join([main_path, 'Key files'])
+    output_path = '.' + sep + sep.join([main_path, 'Output'])
 
-    globals_input_list = (BASELINE_DURATION_FOR_ZSCORE, STIM_DURATION_FOR_ZSCORE, KEYS_PATH, OUTPUT_PATH)
+    globals_input_list = (baseline_duration_for_zscore, stim_duration_for_zscore, keys_path, output_path)
 
     # Load existing JSONs; will be empty if this is the first time running
-    all_json = glob(OUTPUT_PATH + sep + 'JSON files' + sep + '*json')
+    all_json = glob(output_path + sep + 'JSON files' + sep + '*json')
 
     # Generate a list of inputs to be passed to each worker
     file_input_lists = list()
 
-    for dummy_idx, memory_path in enumerate(SIGNALS_PATH):
+    for dummy_idx, memory_path in enumerate(signals_path):
 
         if subjects_to_run is not None:
             if any([chosen for chosen in subjects_to_run if chosen in memory_path]):
@@ -118,7 +120,7 @@ def run_signalsByAM_pipeline(main_path, baseline_duration_for_zscore, stim_durat
 
 
 def run_plot_behavioralDprimes(main_path, baseline_duration_for_zscore, stim_duration_for_zscore, number_of_cores=int(cpu_count() / 2),
-                              subjects_to_run=None, sessions_to_run=None):
+                              subjects_to_run=None, sessions_to_run=None, fixed_auc_window=True):
     # filterwarnings("ignore")
     # number_of_cores  = int(cpu_count()/2)
 
@@ -127,11 +129,12 @@ def run_plot_behavioralDprimes(main_path, baseline_duration_for_zscore, stim_dur
     subjects_to_run = subjects_to_run
     sessions_to_run = sessions_to_run
 
-    KEYS_PATH = '.' + sep + sep.join([main_path, 'Key files'])
-    dprimeMat_files = glob(KEYS_PATH + sep + '*_dprimeMat.csv')
-    OUTPUT_PATH = '.' + sep + sep.join([main_path, 'Output'])
+    keys_path = '.' + sep + sep.join([main_path, 'Key files'])
+    dprimeMat_files = glob(keys_path + sep + '*_dprimeMat.csv')
+    output_path = '.' + sep + sep.join([main_path, 'Output'])
+    FIXED_AUC_WINDOW = fixed_auc_window
 
-    globals_input_list = (KEYS_PATH, OUTPUT_PATH)
+    globals_input_list = (keys_path, output_path)
 
     for dummy_idx, file_path in enumerate(dprimeMat_files):
 
@@ -146,15 +149,17 @@ def run_plot_behavioralDprimes(main_path, baseline_duration_for_zscore, stim_dur
 if __name__ == '__main__':
     filterwarnings("ignore")
     '''
-    AAVrg-GCaMP8m in ACx
+    AAVrg-GCaMP8s in ACx
     Fiber in VO
     '''
     main_path = 'Data_AAVrg-GCaMP8s-ACx_fiber-VO'
     baseline_duration_for_zscore = 1
     stim_duration_for_zscore = 5  # Does not affect AUC calculation
+    fixed_auc_window = False
     # sessions_to_run = ['SUBJ-ID-336_FP-Aversive-AM-220427-143620_dff']  # GRC22 poster
-    subjects_to_run = ['SUBJ-ID-336']
-    run_trialSignals_pipeline(main_path, baseline_duration_for_zscore, stim_duration_for_zscore, subjects_to_run=subjects_to_run)
+    subjects_to_run = None
+    run_trialSignals_pipeline(main_path, baseline_duration_for_zscore, stim_duration_for_zscore, subjects_to_run=subjects_to_run,
+                              fixed_auc_window=fixed_auc_window)
     # run_signalsByAM_pipeline(main_path, baseline_duration_for_zscore, stim_duration_for_zscore,
     #                           subjects_to_run=subjects_to_run)
 
